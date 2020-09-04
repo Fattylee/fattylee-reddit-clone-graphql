@@ -7,7 +7,7 @@ import {
   EntityManager,
 } from "typeorm";
 import express, { Request } from "express";
-import { ApolloServer, UserInputError } from "apollo-server-express";
+import { ApolloServer } from "apollo-server-express";
 import {
   buildSchema,
   Field,
@@ -21,6 +21,11 @@ import {
   Ctx,
 } from "type-graphql";
 import bcrypt from "bcryptjs";
+import Redis from "ioredis";
+import session from "express-session";
+import connectRedis from "connect-redis";
+import cors from "cors";
+import { domain } from "process";
 
 @Entity("users")
 @ObjectType()
@@ -64,6 +69,29 @@ class RegisterInput {
 @Resolver()
 class UserResolver {
   @Mutation(() => UserResponse)
+  async login(
+    // @Args() { email, password }: { email: string; password: string },
+    @Arg("email") email: string,
+    @Arg("password") password: string,
+    @Ctx("cm") cm: EntityManager,
+    @Ctx("req") req: Request
+  ): Promise<UserResponse> {
+    const user = await cm.findOne(User, { where: { email } });
+    if (!user)
+      return { errors: [{ field: "email", message: "email does not exist" }] };
+    const valid = await bcrypt.compare(password, user.password!);
+    if (!valid)
+      return {
+        errors: [{ field: "password", message: "invalid password, try again" }],
+      };
+    req.session!.userId = user.id;
+    console.log(req.session);
+    return {
+      user,
+    };
+  }
+
+  @Mutation(() => UserResponse)
   async register(
     @Arg("data") { password, email }: RegisterInput,
     // @Ctx("req") req: Request,
@@ -91,15 +119,15 @@ class UserResolver {
     return { user };
   }
 
-  @Query(() => UserResponse)
-  me(): Promise<UserResponse> {
-    return Promise.resolve({
-      user: {
-        id: 12,
-        email: "abs",
-        password: "njnjbh",
-      },
-    });
+  @Query(() => User, { nullable: true })
+  async me(
+    @Ctx() { cm, req }: { req: Request; cm: EntityManager }
+  ): Promise<User | undefined> {
+    const id = req.session!.userId;
+    if (!id) {
+      return undefined;
+    }
+    return cm.findOne(User, { where: { id } });
   }
 }
 
@@ -116,11 +144,30 @@ const bootstrap = async () => {
     // dropSchema: true,
   });
 
-  const newUser = conn.manager.create(User, { email: "abc", password: "lup" });
+  // const newUser = conn.manager.create(User, { email: "abc", password: "lup" });
   const data = await conn.manager.findAndCount(User, { where: {} });
   console.log(data);
 
+  const RedisStore = connectRedis(session);
   const app = express();
+  app.use(
+    session({
+      secret: "ksmqksmqismi",
+      name: "qiq",
+      resave: false, // not to save cookie always
+      saveUninitialized: false, // set cookie when initialized only
+      cookie: {
+        maxAge: 1000 * 60 * 60 * 24 * 365 * 10, // 10 years expiration time
+        sameSite: "lax", // prevent cxsf attack
+        secure: app.get("env") === "production", //allow request from https in prod only
+        httpOnly: true, // to prevent client-side js from accessing cookie
+      },
+      store: new RedisStore({ client: new Redis() }),
+    })
+  );
+  // to restrict XMLHttpRequest to certatin domain
+  app.use(cors({ credentials: true, origin: "http://localhost:3000/" }));
+
   const apolloServer = new ApolloServer({
     schema: await buildSchema({ resolvers: [UserResolver], validate: false }),
     context: ({ req }) => ({ req, cm: conn.manager }),
