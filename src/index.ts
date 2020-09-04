@@ -6,7 +6,7 @@ import {
   Column,
   EntityManager,
 } from "typeorm";
-import express, { Request } from "express";
+import express, { Request, Response } from "express";
 import { ApolloServer } from "apollo-server-express";
 import {
   buildSchema,
@@ -25,7 +25,6 @@ import Redis from "ioredis";
 import session from "express-session";
 import connectRedis from "connect-redis";
 import cors from "cors";
-import { domain } from "process";
 
 @Entity("users")
 @ObjectType()
@@ -119,6 +118,20 @@ class UserResolver {
     return { user };
   }
 
+  @Mutation(() => Boolean)
+  logout(
+    @Ctx("res") res: Response,
+    @Ctx("req") req: Request
+  ): Promise<boolean> {
+    return new Promise((resolve, rej) => {
+      return req.session!.destroy((err) => {
+        if (err) return rej(false);
+        res.clearCookie("qiq");
+        return resolve(true);
+      });
+    });
+  }
+
   @Query(() => User, { nullable: true })
   async me(
     @Ctx() { cm, req }: { req: Request; cm: EntityManager }
@@ -144,7 +157,6 @@ const bootstrap = async () => {
     // dropSchema: true,
   });
 
-  // const newUser = conn.manager.create(User, { email: "abc", password: "lup" });
   const data = await conn.manager.findAndCount(User, { where: {} });
   console.log(data);
 
@@ -170,7 +182,7 @@ const bootstrap = async () => {
 
   const apolloServer = new ApolloServer({
     schema: await buildSchema({ resolvers: [UserResolver], validate: false }),
-    context: ({ req }) => ({ req, cm: conn.manager }),
+    context: ({ req, res }) => ({ req, res, cm: conn.manager }),
   });
 
   apolloServer.applyMiddleware({ app });
